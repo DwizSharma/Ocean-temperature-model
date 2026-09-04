@@ -1,6 +1,7 @@
 import React, { useState, Suspense } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, useGLTF } from '@react-three/drei';
+import { OrbitControls, useGLTF, Html } from '@react-three/drei';
+import * as THREE from 'three';
 
 import { pointToLatLon, formatLat, formatLon, formatMonth } from './geo';
 import { classifyIntersection } from './ocean-detection';
@@ -73,7 +74,59 @@ class ModelErrorBoundary extends React.Component {
 }
 
 function Earth({ onOceanClick }) {
-  const { scene } = useGLTF('/earth.glb');
+  const gltf = useGLTF('/earth.glb');
+  const { scene } = gltf;
+  
+  // Load the extracted texture
+  const earthTexture = React.useMemo(() => {
+    const loader = new THREE.TextureLoader();
+    const texture = loader.load('/earth-texture-extracted.jpg', 
+      () => console.log('✅ Texture loaded successfully'),
+      undefined,
+      (error) => console.error('❌ Error loading texture:', error)
+    );
+    texture.encoding = THREE.sRGBEncoding;
+    return texture;
+  }, []);
+
+  // Fix materials and scale
+  React.useEffect(() => {
+    console.log('🌍 Setting up Earth model...');
+    
+    // Calculate bounding box and scale
+    const box = new THREE.Box3().setFromObject(scene);
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    const maxDimension = Math.max(size.x, size.y, size.z);
+    
+    if (maxDimension > 0) {
+      const targetSize = 100;
+      const scale = targetSize / maxDimension;
+      scene.scale.multiplyScalar(scale);
+      scene.position.sub(center.multiplyScalar(scale));
+    }
+    
+    // Apply texture to all meshes
+    let meshCount = 0;
+    scene.traverse((child) => {
+      if (child.isMesh) {
+        meshCount++;
+        console.log(`Applying texture to mesh ${meshCount}: ${child.name}`);
+        
+        // Replace material with textured one
+        child.material = new THREE.MeshStandardMaterial({
+          map: earthTexture,
+          roughness: 0.8,
+          metalness: 0.2
+        });
+        
+        child.castShadow = true;
+        child.receiveShadow = true;
+      }
+    });
+    
+    console.log(`✅ Applied texture to ${meshCount} mesh(es)`);
+  }, [scene, earthTexture]);
 
   const handleClick = (e) => {
     e.stopPropagation();
@@ -93,13 +146,13 @@ function Earth({ onOceanClick }) {
   return <primitive object={scene} onClick={handleClick} />;
 }
 
-// Preload with no decoder path — plain preload only.
+// Preload the model before the component renders
+useGLTF.preload('/earth.glb');
 
 export default function App() {
   const [loading, setLoading] = useState(false);
   const [profile, setProfile] = useState(null);
   const [error, setError] = useState(null);
-  useGLTF.preload('/earth.glb');
 
   const handleOceanClick = async ({ lat, lon }) => {
     setLoading(true);
@@ -121,11 +174,19 @@ export default function App() {
   return (
     <div style={{ width: '100vw', height: '100vh', position: 'relative', backgroundColor: '#050505' }}>
       <Canvas camera={{ position: [0, 0, 250], fov: 45, near: 1, far: 2000 }}>
-        <ambientLight intensity={0.6} />
-        <directionalLight position={[200, 100, 300]} intensity={1.5} />
+        {/* Better lighting setup for Earth */}
+        <ambientLight intensity={0.3} />
+        <directionalLight position={[5, 3, 5]} intensity={1} />
+        <directionalLight position={[-5, -3, -5]} intensity={0.5} />
+        <hemisphereLight args={['#ffffff', '#080820', 0.4]} />
 
         <ModelErrorBoundary>
-          <Suspense fallback={null}>
+          <Suspense fallback={
+            <mesh>
+              <sphereGeometry args={[50, 32, 32]} />
+              <meshStandardMaterial color="#4a90e2" wireframe />
+            </mesh>
+          }>
             <Earth onOceanClick={handleOceanClick} />
           </Suspense>
         </ModelErrorBoundary>
