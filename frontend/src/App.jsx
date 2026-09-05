@@ -8,6 +8,8 @@ import { classifyIntersection } from './ocean-detection';
 import { fetchTemperatureProfile } from './ocean-api';
 import { temperatureToCSS, temperatureToRGB, makeNormalizer } from './color-scale';
 import { CONFIG } from './config';
+import { useAlarms } from './use-alarms';
+import AlarmPanel from './AlarmPanel';
 
 // Generate organic, wavy shape for layers (like geological strata)
 function createWavyLayerShape(width, height, waveIntensity = 0.3, seed = 0) {
@@ -588,7 +590,10 @@ export default function App() {
   const [cameraStage, setCameraStage] = useState(null);
   const [clickedLocation, setClickedLocation] = useState(null);
   const [clickedPoint, setClickedPoint] = useState(null); // 3D point on Earth
+  const [showAlarmPanel, setShowAlarmPanel] = useState(false);
   const controlsRef = useRef();
+
+  const { alarms, error: alarmError, addAlarm, removeAlarm } = useAlarms(CONFIG.ALARM_POLL_INTERVAL_MS);
 
   const handleOceanClick = async ({ lat, lon, point }) => {
     setLoading(true);
@@ -702,10 +707,11 @@ export default function App() {
       <div style={{
         position: 'absolute',
         top: 20,
-        right: 20,
+        right: showAlarmPanel ? 320 : 20,
         display: 'flex',
         gap: 15,
-        alignItems: 'center'
+        alignItems: 'center',
+        transition: 'right 0.2s ease',
       }}>
         {showCrossSection && (
           <button 
@@ -785,6 +791,52 @@ export default function App() {
           <p style={{ color: 'white', fontSize: 16, fontWeight: 600 }}>Diving deep...</p>
           <style>{`@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }`}</style>
         </div>
+      )}
+
+      {/* Alarm bell button (always visible, top-right corner) */}
+      {!showAlarmPanel && (
+        <button
+          onClick={() => setShowAlarmPanel(true)}
+          title="Set temperature alarms"
+          style={{
+            position: 'absolute', top: 20, right: 20,
+            background: alarms.some(a => a.status === 'triggered')
+              ? 'linear-gradient(135deg,#ef5350,#c62828)'
+              : 'rgba(10,10,20,0.9)',
+            border: '1px solid rgba(255,255,255,0.15)',
+            color: '#fff', borderRadius: 10, width: 44, height: 44,
+            cursor: 'pointer', fontSize: 20, display: 'flex',
+            alignItems: 'center', justifyContent: 'center',
+            backdropFilter: 'blur(10px)',
+            boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
+            zIndex: 99,
+          }}
+        >
+          🔔{alarms.filter(a => a.status === 'active').length > 0 && (
+            <span style={{
+              position: 'absolute', top: 6, right: 6,
+              background: '#4fc3f7', borderRadius: '50%',
+              width: 14, height: 14, fontSize: 9, fontWeight: 700,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              {alarms.filter(a => a.status === 'active').length}
+            </span>
+          )}
+        </button>
+      )}
+
+      {/* Alarm panel */}
+      {showAlarmPanel && (
+        <AlarmPanel
+          alarms={alarms}
+          onAdd={addAlarm}
+          onRemove={removeAlarm}
+          error={alarmError}
+          prefillLat={clickedLocation?.lat}
+          prefillLon={clickedLocation?.lon}
+          targetMonth="2020-03"
+          onClose={() => setShowAlarmPanel(false)}
+        />
       )}
 
       {error && (
