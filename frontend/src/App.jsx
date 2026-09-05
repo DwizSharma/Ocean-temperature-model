@@ -11,6 +11,262 @@ import { CONFIG } from './config';
 import { useAlarms } from './use-alarms';
 import AlarmPanel from './AlarmPanel';
 
+// ── Stars background ──────────────────────────────────────────────────────
+
+function StarField({ count = 2200 }) {
+  const positions = React.useMemo(() => {
+    const arr = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      // Distribute on a large sphere shell so they surround the Earth
+      const theta = Math.random() * Math.PI * 2;
+      const phi   = Math.acos(2 * Math.random() - 1);
+      const r     = 800 + Math.random() * 400;
+      arr[i * 3]     = r * Math.sin(phi) * Math.cos(theta);
+      arr[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+      arr[i * 3 + 2] = r * Math.cos(phi);
+    }
+    return arr;
+  }, [count]);
+
+  const sizes = React.useMemo(() => {
+    const arr = new Float32Array(count);
+    for (let i = 0; i < count; i++) arr[i] = 0.6 + Math.random() * 2.2;
+    return arr;
+  }, [count]);
+
+  const geometry = React.useMemo(() => {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geo.setAttribute('size',     new THREE.BufferAttribute(sizes, 1));
+    return geo;
+  }, [positions, sizes]);
+
+  return (
+    <points geometry={geometry}>
+      <pointsMaterial
+        color="#ffffff"
+        size={1.5}
+        sizeAttenuation={false}
+        transparent
+        opacity={0.85}
+        depthWrite={false}
+      />
+    </points>
+  );
+}
+
+// ── Shooting stars ────────────────────────────────────────────────────────
+
+const SHOOTING_COUNT = 3;
+
+function randomShootingStar() {
+  // Start position on the distant star sphere
+  const theta = Math.random() * Math.PI * 2;
+  const phi   = Math.acos(2 * Math.random() - 1);
+  const r     = 700;
+  const sx = r * Math.sin(phi) * Math.cos(theta);
+  const sy = r * Math.sin(phi) * Math.sin(theta);
+  const sz = r * Math.cos(phi);
+
+  // Travel direction: mostly "downward" relative to start, biased inward
+  const dir = new THREE.Vector3(
+    (Math.random() - 0.5) * 0.6 - sx * 0.003,
+    (Math.random() - 0.5) * 0.6 - sy * 0.003,
+    (Math.random() - 0.5) * 0.6 - sz * 0.003,
+  ).normalize();
+
+  return {
+    start:    new THREE.Vector3(sx, sy, sz),
+    dir,
+    speed:    180 + Math.random() * 320,
+    length:   60  + Math.random() * 120,
+    progress: Math.random(),           // stagger so they don't all fire at once
+    active:   Math.random() > 0.5,
+    delay:    2 + Math.random() * 8,   // seconds until next fire
+    delayLeft: 0,
+  };
+}
+
+function ShootingStars() {
+  const starsRef = useRef(
+    Array.from({ length: SHOOTING_COUNT }, randomShootingStar)
+  );
+
+  // Two points per shooting star: head and tail
+  const posRef   = useRef(new Float32Array(SHOOTING_COUNT * 2 * 3));
+  const colorRef = useRef(new Float32Array(SHOOTING_COUNT * 2 * 3));
+  const geoRef   = useRef();
+
+  useFrame((_, delta) => {
+    const pos   = posRef.current;
+    const col   = colorRef.current;
+
+    starsRef.current.forEach((s, i) => {
+      if (!s.active) {
+        s.delayLeft -= delta;
+        if (s.delayLeft <= 0) {
+          // Reset and fire
+          const fresh = randomShootingStar();
+          fresh.active    = true;
+          fresh.progress  = 0;
+          fresh.delayLeft = 0;
+          starsRef.current[i] = fresh;
+        }
+        // Write invisible (at origin, fully transparent via color=0)
+        const base = i * 6;
+        for (let k = 0; k < 6; k++) { pos[base + k] = 0; col[base + k] = 0; }
+        return;
+      }
+
+      s.progress += delta * s.speed;
+
+      if (s.progress > s.length + 60) {
+        // Finished — schedule next
+        s.active    = false;
+        s.delayLeft = s.delay;
+        return;
+      }
+
+      // Head position
+      const hx = s.start.x + s.dir.x * s.progress;
+      const hy = s.start.y + s.dir.y * s.progress;
+      const hz = s.start.z + s.dir.z * s.progress;
+
+      // Tail position (behind head by `length`)
+      const tailDist = Math.min(s.progress, s.length);
+      const tx = hx - s.dir.x * tailDist;
+      const ty = hy - s.dir.y * tailDist;
+      const tz = hz - s.dir.z * tailDist;
+
+      const base = i * 6;
+      // Head
+      pos[base]     = hx; pos[base + 1] = hy; pos[base + 2] = hz;
+      // Tail
+      pos[base + 3] = tx; pos[base + 4] = ty; pos[base + 5] = tz;
+
+      // Fade: bright head, faded tail
+      const fade = Math.min(1, s.progress / 20); // fade in
+      col[base]     = fade; col[base + 1] = fade; col[base + 2] = fade;        // head: white
+      col[base + 3] = 0;    col[base + 4] = 0;    col[base + 5] = 0;           // tail: transparent
+    });
+
+    if (geoRef.current) {
+      geoRef.current.attributes.position.needsUpdate = true;
+      geoRef.current.attributes.color.needsUpdate    = true;
+    }
+  });
+
+  const geometry = React.useMemo(() => {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(posRef.current, 3));
+    geo.setAttribute('color',    new THREE.BufferAttribute(colorRef.current, 3));
+    geoRef.current = geo;
+    return geo;
+  }, []);
+
+  return (
+    <lineSegments geometry={geometry}>
+      <lineBasicMaterial
+        vertexColors
+        transparent
+        opacity={0.9}
+        depthWrite={false}
+        linewidth={1}
+      />
+    </lineSegments>
+  );
+}
+
+// ── Asteroids ─────────────────────────────────────────────────────────────
+
+const ASTEROID_COUNT = 7;
+
+// Irregular asteroid geometry: icosahedron with randomized vertices
+function makeAsteroidGeo(radius, seed) {
+  const geo = new THREE.IcosahedronGeometry(radius, 1);
+  const pos = geo.attributes.position;
+  const rng = (n) => {
+    // deterministic-ish pseudo-random from seed + index
+    const x = Math.sin(seed * 127.1 + n * 311.7) * 43758.5453;
+    return x - Math.floor(x);
+  };
+  for (let i = 0; i < pos.count; i++) {
+    const jitter = 0.35 + rng(i) * 0.3;
+    pos.setXYZ(i, pos.getX(i) * jitter * 2.8, pos.getY(i) * jitter * 2.8, pos.getZ(i) * jitter * 2.8);
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function randomAsteroid(index) {
+  const theta = Math.random() * Math.PI * 2;
+  const phi   = Math.acos(2 * Math.random() - 1);
+  const r     = 350 + Math.random() * 320;
+  return {
+    pos: new THREE.Vector3(
+      r * Math.sin(phi) * Math.cos(theta),
+      r * Math.sin(phi) * Math.sin(theta),
+      r * Math.cos(phi),
+    ),
+    // Slow drift direction
+    vel: new THREE.Vector3(
+      (Math.random() - 0.5) * 4,
+      (Math.random() - 0.5) * 4,
+      (Math.random() - 0.5) * 4,
+    ),
+    rotAxis: new THREE.Vector3(
+      Math.random() - 0.5,
+      Math.random() - 0.5,
+      Math.random() - 0.5,
+    ).normalize(),
+    rotSpeed: 0.1 + Math.random() * 0.4,
+    rot:      Math.random() * Math.PI * 2,
+    radius:   2.5 + Math.random() * 4.5,
+    seed:     index * 17 + Math.random() * 100,
+    color: new THREE.Color().setHSL(0.07 + Math.random() * 0.06, 0.25, 0.38 + Math.random() * 0.18),
+  };
+}
+
+function AsteroidMesh({ data }) {
+  const meshRef = useRef();
+  const geo = React.useMemo(() => makeAsteroidGeo(1, data.seed), [data.seed]);
+
+  useFrame((_, delta) => {
+    if (!meshRef.current) return;
+    data.rot += data.rotSpeed * delta;
+    meshRef.current.setRotationFromAxisAngle(data.rotAxis, data.rot);
+    // Drift slowly; wrap loosely at ±900
+    data.pos.addScaledVector(data.vel, delta);
+    if (data.pos.length() > 900) data.vel.negate();
+    meshRef.current.position.copy(data.pos);
+    meshRef.current.scale.setScalar(data.radius);
+  });
+
+  return (
+    <mesh ref={meshRef} geometry={geo} position={data.pos}>
+      <meshStandardMaterial
+        color={data.color}
+        roughness={0.92}
+        metalness={0.18}
+        flatShading
+      />
+    </mesh>
+  );
+}
+
+function Asteroids() {
+  const asteroids = React.useMemo(
+    () => Array.from({ length: ASTEROID_COUNT }, (_, i) => randomAsteroid(i)),
+    []
+  );
+  return (
+    <>
+      {asteroids.map((a, i) => <AsteroidMesh key={i} data={a} />)}
+    </>
+  );
+}
+
 // Generate organic, wavy shape for layers (like geological strata)
 function createWavyLayerShape(width, height, waveIntensity = 0.3, seed = 0) {
   const shape = new THREE.Shape();
@@ -365,11 +621,6 @@ function InfoSidebar({ profile, latitude, longitude, region_name }) {
       border: '1px solid rgba(255,255,255,0.1)'
     }}>
       <h3 style={{ margin: '0 0 12px 0', fontSize: 18, fontWeight: 700 }}>Location</h3>
-      {region_name && (
-        <p style={{ fontSize: 13, margin: '0 0 6px 0', opacity: 0.8, fontStyle: 'italic' }}>
-          📍 {region_name}
-        </p>
-      )}
       <p style={{ fontSize: 14, margin: 0, opacity: 0.9 }}>
         {formatLat(latitude)} {formatLon(longitude)}
       </p>
@@ -894,6 +1145,9 @@ export default function App() {
               <meshStandardMaterial color="#4a90e2" wireframe />
             </mesh>
           }>
+            <StarField />
+            <ShootingStars />
+            <Asteroids />
             <Earth onOceanClick={handleOceanClick} dimmed={showCrossSection} />
             <GeologicalCrossSection 
               profile={profile} 
