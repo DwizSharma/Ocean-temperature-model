@@ -25,3 +25,18 @@ def test_invalid_latitude_longitude_and_month_are_rejected() -> None:
     for payload in cases:
         with pytest.raises(ValidationError):
             PredictionRequest(**payload)
+
+
+def test_frontend_nested_format_is_accepted(app_request) -> None:  # type: ignore[no-untyped-def]
+    payload = {
+        "request_type": "point_profile",
+        "coordinates": {"lat": 12.5, "lon": 145.3},
+        "timestamp": "2020-03-01",
+    }
+    req = PredictionRequest.model_validate(payload)
+    assert req.latitude == 12.5
+    assert req.longitude == 145.3
+    assert req.target_month == "2020-03"
+    body = predict(req, app_request)
+    assert len(body.depths_m) == 23
+

@@ -4,19 +4,34 @@ from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
+ASSETS_DIR = BACKEND_DIR / "Assets"
 
-    model_path: Path = Path("model/ConvLSTM_JanFebMar_Prototype.keras")
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=(BACKEND_DIR / ".env", ".env"),
+        extra="ignore",
+    )
+
+    model_path: Path = ASSETS_DIR / "model" / "best_model.keras"
     model_version: str = "prototype-v1"
-    sst_data_dir: Path = Path("data/SST")
-    ssh_data_dir: Path = Path("data/SSH")
-    preprocessing_stats_path: Path = Path("preprocessing_artifacts/preprocessing_stats.npz")
+    sst_data_dir: Path = ASSETS_DIR / "data" / "SST"
+    ssh_data_dir: Path = ASSETS_DIR / "data" / "SSH"
+    preprocessing_stats_path: Path = ASSETS_DIR / "preprocessing" / "preprocessing_stats.npz"
     allow_origins: str = "*"
     temporal_window_months: int = 3
     # Empty means a future broadly trained model can use every month whose inputs exist.
     supported_target_months: str = "2020-03"
     require_ocean_input: bool = True
+
+    def model_post_init(self, __context: object) -> None:
+        # Resolve any relative paths relative to BACKEND_DIR
+        for field in ("model_path", "sst_data_dir", "ssh_data_dir", "preprocessing_stats_path"):
+            val: Path = getattr(self, field)
+            if not val.is_absolute():
+                resolved = (BACKEND_DIR / val).resolve()
+                setattr(self, field, resolved)
 
     @property
     def cors_origins(self) -> list[str]:
@@ -30,3 +45,4 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
