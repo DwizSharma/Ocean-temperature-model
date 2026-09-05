@@ -1,115 +1,402 @@
 import React, { useState, Suspense, useRef } from 'react';
-import { Canvas, useThree } from '@react-three/fiber';
+import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 
 import { pointToLatLon, formatLat, formatLon, formatMonth } from './geo';
 import { classifyIntersection } from './ocean-detection';
 import { fetchTemperatureProfile } from './ocean-api';
-import { temperatureToCSS, makeNormalizer } from './color-scale';
+import { temperatureToCSS, temperatureToRGB, makeNormalizer } from './color-scale';
+import { CONFIG } from './config';
 
-function TemperatureLayers({ profile }) {
-  if (!profile) return null;
-
-  const { depths_m, temperature_celsius, latitude, longitude, target_month } = profile;
+// Generate organic, wavy shape for layers (like geological strata)
+function createWavyLayerShape(width, height, waveIntensity = 0.3, seed = 0) {
+  const shape = new THREE.Shape();
+  const segments = 50;
+  const segmentWidth = width / segments;
   
-  // Create normalizer for color coding
-  const normalize = makeNormalizer(temperature_celsius);
+  // Start from bottom-left
+  shape.moveTo(-width / 2, -height / 2);
+  
+  // Draw wavy top edge
+  for (let i = 0; i <= segments; i++) {
+    const x = -width / 2 + i * segmentWidth;
+    const wave = Math.sin((i / segments) * Math.PI * 4 + seed) * waveIntensity;
+    const wave2 = Math.sin((i / segments) * Math.PI * 7 + seed * 1.3) * waveIntensity * 0.5;
+    const y = height / 2 + wave + wave2;
+    
+    if (i === 0) {
+      shape.moveTo(x, y);
+    } else {
+      shape.lineTo(x, y);
+    }
+  }
+  
+  // Right edge
+  shape.lineTo(width / 2, -height / 2);
+  
+  // Bottom edge (also wavy but less)
+  for (let i = segments; i >= 0; i--) {
+    const x = -width / 2 + i * segmentWidth;
+    const wave = Math.sin((i / segments) * Math.PI * 3 + seed + 0.5) * waveIntensity * 0.3;
+    const y = -height / 2 + wave;
+    shape.lineTo(x, y);
+  }
+  
+  shape.closePath();
+  return shape;
+}
+
+// Organic geological layer with gradients
+function OrganicLayer({ depth, temp, index, totalLayers, normalize, startAnimation, isVisible, allTemps }) {
+  const meshRef = useRef();
+  const [scale, setScale] = useState(0);
+  const [opacity, setOpacity] = useState(0);
+  
+  const normalizedTemp = normalize(temp);
+  const [r, g, b] = temperatureToRGB(normalizedTemp);
+  const color = new THREE.Color(r / 255, g / 255, b / 255);
+  
+  // Get adjacent temperatures for gradient
+  const prevTemp = index > 0 ? allTemps[index - 1] : temp;
+  const nextTemp = index < totalLayers - 1 ? allTemps[index + 1] : temp;
+  const [r1, g1, b1] = temperatureToRGB(normalize(prevTemp));
+  const [r2, g2, b2] = temperatureToRGB(normalize(nextTemp));
+  const colorTop = new THREE.Color(r1 / 255, g1 / 255, b1 / 255);
+  const colorBottom = new THREE.Color(r2 / 255, g2 / 255, b2 / 255);
+  
+  // Create organic wavy layer - use full horizontal space
+  const layerGeometry = React.useMemo(() => {
+    const layerHeight = 2.5;
+    const layerWidth = 180; // Full horizontal width
+    const waveIntensity = 0.6 + (index * 0.01);
+    const seed = index * 2.5;
+    
+    const shape = createWavyLayerShape(layerWidth, layerHeight, waveIntensity, seed);
+    const extrudeSettings = {
+      depth: 3,
+      bevelEnabled: true,
+      bevelThickness: 0.15,
+      bevelSize: 0.1,
+      bevelSegments: 2
+    };
+    
+    return new THREE.ExtrudeGeometry(shape, extrudeSettings);
+  }, [index]);
+  
+  // Calculate spacing to fit all layers in view
+  const viewHeight = 60; // Available vertical space
+  const spacing = viewHeight / totalLayers;
+  const yPosition = (totalLayers / 2 - index - 0.5) * spacing;
+  
+  useFrame(() => {
+    if (startAnimation && isVisible) {
+      const targetScale = 1;
+      const targetOpacity = 0.95;
+      
+      if (scale < targetScale) {
+        setScale(prev => Math.min(prev + 0.04, targetScale));
+      }
+      if (opacity < targetOpacity) {
+        setOpacity(prev => Math.min(prev + 0.04, targetOpacity));
+      }
+    } else if (!isVisible && opacity > 0) {
+      setOpacity(prev => Math.max(prev - 0.08, 0));
+      setScale(prev => Math.max(prev - 0.08, 0));
+    }
+  });
+
+  if (opacity === 0) return null;
+
+  // Create gradient material
+  const gradientTexture = React.useMemo(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1;
+    canvas.height = 256;
+    const context = canvas.getContext('2d');
+    
+    const gradient = context.createLinearGradient(0, 0, 0, 256);
+    gradient.addColorStop(0, `rgb(${r1}, ${g1}, ${b1})`);
+    gradient.addColorStop(0.5, `rgb(${r}, ${g}, ${b})`);
+    gradient.addColorStop(1, `rgb(${r2}, ${g2}, ${b2})`);
+    
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, 1, 256);
+    
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.needsUpdate = true;
+    return texture;
+  }, [r, g, b, r1, g1, b1, r2, g2, b2]);
 
   return (
-    <div>
-      <div style={{ marginBottom: 16 }}>
-        <h3 style={{ margin: '0 0 8px 0', fontSize: 16 }}>Location</h3>
-        <p style={{ fontSize: 14, margin: 0, opacity: 0.9 }}>
-          {formatLat(latitude)} {formatLon(longitude)}
-          {target_month && <> • {formatMonth(target_month)}</>}
-        </p>
-      </div>
+    <group position={[0, yPosition, 0]}>
+      <mesh ref={meshRef} geometry={layerGeometry} scale={[scale, 1, 1]} rotation={[0, 0, 0]}>
+        <meshStandardMaterial 
+          map={gradientTexture}
+          transparent
+          opacity={opacity}
+          emissive={color}
+          emissiveIntensity={0.2}
+          roughness={0.9}
+          metalness={0.05}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
       
-      <div style={{ marginBottom: 12 }}>
-        <h3 style={{ margin: '0 0 8px 0', fontSize: 16 }}>Temperature Profile</h3>
-        <p style={{ fontSize: 12, opacity: 0.7, margin: 0 }}>
-          {depths_m.length} depth measurements
-        </p>
+      {/* Depth marker line on left */}
+      {opacity > 0.3 && (
+        <mesh position={[-92, 0, 1.5]}>
+          <cylinderGeometry args={[0.2, 0.2, spacing * 0.6, 8]} />
+          <meshBasicMaterial color={color} transparent opacity={opacity * 0.8} />
+        </mesh>
+      )}
+      
+      {/* Temperature marker line on right */}
+      {opacity > 0.3 && (
+        <mesh position={[92, 0, 1.5]}>
+          <cylinderGeometry args={[0.2, 0.2, spacing * 0.6, 8]} />
+          <meshBasicMaterial color={color} transparent opacity={opacity * 0.8} />
+        </mesh>
+      )}
+    </group>
+  );
+}
+
+// Full-screen geological cross-section overlay (positioned at clicked point)
+function GeologicalCrossSection({ profile, show, clickedPoint }) {
+  if (!profile) return null;
+
+  const { depths_m, temperature_celsius } = profile;
+  const normalize = makeNormalizer(temperature_celsius);
+  
+  // Calculate spacing to fit all layers
+  const viewHeight = 60;
+  const spacing = viewHeight / depths_m.length;
+  
+  // Position layers at the clicked point on Earth surface
+  const layerPosition = clickedPoint 
+    ? clickedPoint.clone().normalize().multiplyScalar(102) // Just above Earth surface
+    : new THREE.Vector3(0, 0, 0);
+
+  return (
+    <group position={layerPosition}>
+      {depths_m.map((depth, i) => (
+        <OrganicLayer
+          key={i}
+          depth={depth}
+          temp={temperature_celsius[i]}
+          index={i}
+          totalLayers={depths_m.length}
+          normalize={normalize}
+          startAnimation={show}
+          isVisible={show}
+          allTemps={temperature_celsius}
+        />
+      ))}
+      
+      {/* Vertical reference lines */}
+      {show && (
+        <>
+          <mesh position={[-93, 0, 1.5]}>
+            <cylinderGeometry args={[0.1, 0.1, viewHeight, 8]} />
+            <meshBasicMaterial color="#ffffff" transparent opacity={0.3} />
+          </mesh>
+          <mesh position={[93, 0, 1.5]}>
+            <cylinderGeometry args={[0.1, 0.1, viewHeight, 8]} />
+            <meshBasicMaterial color="#ffffff" transparent opacity={0.3} />
+          </mesh>
+        </>
+      )}
+    </group>
+  );
+}
+
+// Full-screen data overlay
+function DataOverlay({ profile, show }) {
+  if (!profile || !show) return null;
+
+  const { depths_m, temperature_celsius } = profile;
+  const normalize = makeNormalizer(temperature_celsius);
+  
+  // Calculate spacing to match 3D layers - fit in vertical space
+  const viewHeight = window.innerHeight * 0.85; // 85% of screen height
+  const itemHeight = viewHeight / depths_m.length;
+
+  return (
+    <div style={{
+      position: 'absolute',
+      top: '50%',
+      left: 0,
+      right: 0,
+      transform: 'translateY(-50%)',
+      pointerEvents: 'none',
+      opacity: show ? 1 : 0,
+      transition: 'opacity 0.5s ease',
+      display: 'flex',
+      justifyContent: 'space-between',
+      padding: '0 40px',
+      height: viewHeight
+    }}>
+      {/* Depth labels on left */}
+      <div style={{ 
+        display: 'flex', 
+        flexDirection: 'column',
+        justifyContent: 'space-around',
+        width: 120
+      }}>
+        {depths_m.map((depth, i) => {
+          const normalizedTemp = normalize(temperature_celsius[i]);
+          const [r, g, b] = temperatureToRGB(normalizedTemp);
+          
+          // Gradient with adjacent layers
+          const prevNorm = i > 0 ? normalize(temperature_celsius[i - 1]) : normalizedTemp;
+          const nextNorm = i < depths_m.length - 1 ? normalize(temperature_celsius[i + 1]) : normalizedTemp;
+          const [r1, g1, b1] = temperatureToRGB(prevNorm);
+          const [r2, g2, b2] = temperatureToRGB(nextNorm);
+          
+          return (
+            <div
+              key={i}
+              style={{
+                padding: `${Math.max(8, itemHeight * 0.3)}px 20px`,
+                background: `linear-gradient(180deg, rgb(${r1}, ${g1}, ${b1}) 0%, rgb(${r}, ${g}, ${b}) 50%, rgb(${r2}, ${g2}, ${b2}) 100%)`,
+                color: 'white',
+                fontSize: Math.max(12, Math.min(15, itemHeight * 0.4)),
+                fontWeight: 700,
+                borderRadius: 8,
+                textAlign: 'center',
+                boxShadow: `0 4px 16px rgba(${r}, ${g}, ${b}, 0.5)`,
+                border: '2px solid rgba(255,255,255,0.4)',
+                backdropFilter: 'blur(8px)',
+                animation: `slideInLeft 0.5s ease-out ${i * 0.03}s both`,
+                minHeight: Math.max(30, itemHeight * 0.7)
+              }}
+            >
+              {depth}m
+            </div>
+          );
+        })}
       </div>
 
-      <div style={{ maxHeight: 400, overflowY: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-          <thead style={{ position: 'sticky', top: 0, background: 'rgba(20, 20, 25, 0.95)', zIndex: 1 }}>
-            <tr style={{ borderBottom: '2px solid rgba(255,255,255,0.3)' }}>
-              <th style={{ textAlign: 'left', padding: '8px 4px' }}>Depth (m)</th>
-              <th style={{ textAlign: 'right', padding: '8px 4px' }}>Temp (°C)</th>
-              <th style={{ textAlign: 'center', padding: '8px 4px', width: 60 }}>Color</th>
-            </tr>
-          </thead>
-          <tbody>
-            {depths_m.map((d, i) => {
-              const temp = temperature_celsius[i];
-              const normalizedTemp = normalize(temp);
-              const color = temperatureToCSS(normalizedTemp);
-              
-              return (
-                <tr key={i} style={{ 
-                  borderBottom: '1px solid rgba(255,255,255,0.08)',
-                  transition: 'background 0.2s'
-                }}>
-                  <td style={{ padding: '6px 4px', fontWeight: 500 }}>{d.toFixed(0)}</td>
-                  <td style={{ padding: '6px 4px', textAlign: 'right', fontFamily: 'monospace' }}>
-                    {temp.toFixed(2)}
-                  </td>
-                  <td style={{ padding: '6px 4px', textAlign: 'center' }}>
-                    <div style={{
-                      width: 40,
-                      height: 20,
-                      background: color,
-                      borderRadius: 3,
-                      margin: '0 auto',
-                      border: '1px solid rgba(255,255,255,0.2)'
-                    }} />
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      {/* Temperature values on right */}
+      <div style={{ 
+        display: 'flex', 
+        flexDirection: 'column',
+        justifyContent: 'space-around',
+        width: 130
+      }}>
+        {temperature_celsius.map((temp, i) => {
+          const normalizedTemp = normalize(temp);
+          const [r, g, b] = temperatureToRGB(normalizedTemp);
+          
+          return (
+            <div
+              key={i}
+              style={{
+                padding: `${Math.max(8, itemHeight * 0.3)}px 20px`,
+                background: 'rgba(0, 0, 0, 0.92)',
+                color: `rgb(${r}, ${g}, ${b})`,
+                fontSize: Math.max(13, Math.min(16, itemHeight * 0.45)),
+                fontWeight: 700,
+                fontFamily: 'monospace',
+                borderRadius: 8,
+                textAlign: 'center',
+                boxShadow: `0 4px 16px rgba(${r}, ${g}, ${b}, 0.6)`,
+                border: `2px solid rgb(${r}, ${g}, ${b})`,
+                backdropFilter: 'blur(8px)',
+                animation: `slideInRight 0.5s ease-out ${i * 0.03}s both`,
+                minHeight: Math.max(30, itemHeight * 0.7)
+              }}
+            >
+              {temp.toFixed(1)}°C
+            </div>
+          );
+        })}
       </div>
 
-      {/* Temperature Legend */}
-      <div style={{ marginTop: 16, padding: 12, background: 'rgba(0,0,0,0.3)', borderRadius: 6 }}>
-        <p style={{ fontSize: 11, opacity: 0.8, margin: '0 0 8px 0', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-          Temperature Scale
+      <style>{`
+        @keyframes slideInLeft {
+          from {
+            opacity: 0;
+            transform: translateX(-50px);
+          }
+          to {
+            opacity: 1;
+            transform: translateX(0);
+          }
+        }
+        
+        @keyframes slideInRight {
+          from {
+            opacity: 0;
+            transform: translateX(50px);
+          }
+          to {
+            opacity: 1;
+            transform: translateX(0);
+          }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+// Info sidebar
+function InfoSidebar({ profile, latitude, longitude, region_name }) {
+  if (!profile) return null;
+
+  const { temperature_celsius } = profile;
+
+  return (
+    <div style={{
+      position: 'absolute',
+      top: 20,
+      left: 20,
+      maxWidth: 300,
+      backgroundColor: 'rgba(10, 10, 15, 0.95)',
+      color: 'white',
+      padding: 20,
+      borderRadius: 12,
+      fontFamily: 'system-ui, -apple-system, sans-serif',
+      boxShadow: '0 8px 32px rgba(0,0,0,0.8)',
+      backdropFilter: 'blur(20px)',
+      border: '1px solid rgba(255,255,255,0.1)'
+    }}>
+      <h3 style={{ margin: '0 0 12px 0', fontSize: 18, fontWeight: 700 }}>Location</h3>
+      {region_name && (
+        <p style={{ fontSize: 13, margin: '0 0 6px 0', opacity: 0.8, fontStyle: 'italic' }}>
+          📍 {region_name}
         </p>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 11 }}>Cold</span>
-          <div style={{ 
-            flex: 1, 
-            height: 20, 
-            background: 'linear-gradient(to right, #2b1454, #2354a8, #229ebc, #62c779, #f2c444, #e0543f)',
-            borderRadius: 3,
-            border: '1px solid rgba(255,255,255,0.2)'
-          }} />
-          <span style={{ fontSize: 11 }}>Warm</span>
+      )}
+      <p style={{ fontSize: 14, margin: 0, opacity: 0.9 }}>
+        {formatLat(latitude)} {formatLon(longitude)}
+      </p>
+      
+      <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+          <span style={{ opacity: 0.8 }}>Surface:</span>
+          <span style={{ fontWeight: 700 }}>{temperature_celsius[0].toFixed(1)}°C</span>
         </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: 10, opacity: 0.7 }}>
-          <span>{Math.min(...temperature_celsius).toFixed(1)}°C</span>
-          <span>{Math.max(...temperature_celsius).toFixed(1)}°C</span>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+          <span style={{ opacity: 0.8 }}>Deep:</span>
+          <span style={{ fontWeight: 700 }}>{temperature_celsius[temperature_celsius.length - 1].toFixed(1)}°C</span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
+          <span style={{ opacity: 0.8 }}>Range:</span>
+          <span style={{ fontWeight: 700 }}>
+            {(temperature_celsius[0] - temperature_celsius[temperature_celsius.length - 1]).toFixed(1)}°C
+          </span>
         </div>
       </div>
     </div>
   );
 }
 
+// Error boundary
 class ModelErrorBoundary extends React.Component {
   state = { error: null };
-
-  static getDerivedStateFromError(error) {
-    return { error };
-  }
-
-  componentDidCatch(error, info) {
-    console.error('GLTF failed to load:', error, info);
-  }
-
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error, info) { console.error('GLTF failed:', error, info); }
   render() {
     if (this.state.error) {
       return (
@@ -123,183 +410,250 @@ class ModelErrorBoundary extends React.Component {
   }
 }
 
-function CameraController({ targetPosition, shouldZoom, onZoomComplete }) {
-  const { camera } = useThree();
-  const isAnimatingRef = useRef(false);
+// Camera zoom animation (zoom to clicked point and keep it centered)
+function CameraController({ stage, clickedPoint, onComplete }) {
+  const { camera, controls } = useThree();
+  const animationRef = useRef({ isAnimating: false });
   
   React.useEffect(() => {
-    if (shouldZoom && targetPosition && !isAnimatingRef.current) {
-      isAnimatingRef.current = true;
+    if (!stage || animationRef.current.isAnimating) return;
+    
+    if (stage === 'zoom-in' && clickedPoint) {
+      // Zoom into the specific clicked point on Earth
+      animationRef.current.isAnimating = true;
+      if (controls) {
+        controls.enabled = false;
+        controls.autoRotate = false;
+      }
       
-      // Smoothly zoom to the clicked location
-      const startPosition = camera.position.clone();
-      const duration = 1500; // ms
+      const startPos = camera.position.clone();
+      
+      // Calculate zoom position: move camera closer along the direction to clicked point
+      const direction = clickedPoint.clone().normalize();
+      const endPos = direction.multiplyScalar(140); // Close but not too close
+      
+      const startLookAt = new THREE.Vector3(0, 0, 0);
+      const endLookAt = clickedPoint.clone().normalize().multiplyScalar(50);
+      
+      const duration = 2000;
       const startTime = Date.now();
       
       const animate = () => {
         const elapsed = Date.now() - startTime;
         const progress = Math.min(elapsed / duration, 1);
         
-        // Ease-in-out function
-        const eased = progress < 0.5
-          ? 2 * progress * progress
-          : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+        // Ease-in-out for smooth zoom
+        const eased = progress < 0.5 
+          ? 4 * progress * progress * progress 
+          : 1 - Math.pow(-2 * progress + 2, 3) / 2;
         
-        camera.position.lerpVectors(startPosition, targetPosition, eased);
-        camera.lookAt(0, 0, 0);
+        camera.position.lerpVectors(startPos, endPos, eased);
+        
+        // Smoothly transition look-at point
+        const currentLookAt = new THREE.Vector3().lerpVectors(startLookAt, endLookAt, eased);
+        camera.lookAt(currentLookAt);
+        
+        if (controls) {
+          controls.target.copy(currentLookAt);
+        }
         
         if (progress < 1) {
           requestAnimationFrame(animate);
         } else {
-          isAnimatingRef.current = false;
-          if (onZoomComplete) onZoomComplete();
+          animationRef.current.isAnimating = false;
+          if (onComplete) onComplete();
         }
       };
+      animate();
+    } else if (stage === 'zoom-out') {
+      // Zoom back out to full Earth view
+      animationRef.current.isAnimating = true;
       
+      const startPos = camera.position.clone();
+      const endPos = new THREE.Vector3(0, 0, 250);
+      
+      const startLookAt = controls ? controls.target.clone() : new THREE.Vector3(0, 0, 0);
+      const endLookAt = new THREE.Vector3(0, 0, 0);
+      
+      const duration = 1500;
+      const startTime = Date.now();
+      
+      const animate = () => {
+        const elapsed = Date.now() - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        const eased = progress < 0.5 
+          ? 2 * progress * progress 
+          : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+        
+        camera.position.lerpVectors(startPos, endPos, eased);
+        
+        const currentLookAt = new THREE.Vector3().lerpVectors(startLookAt, endLookAt, eased);
+        camera.lookAt(currentLookAt);
+        
+        if (controls) {
+          controls.target.copy(currentLookAt);
+        }
+        
+        if (progress < 1) {
+          requestAnimationFrame(animate);
+        } else {
+          animationRef.current.isAnimating = false;
+          if (controls) {
+            controls.enabled = true;
+            controls.autoRotate = true;
+            controls.target.set(0, 0, 0);
+          }
+          if (onComplete) onComplete();
+        }
+      };
       animate();
     }
-  }, [targetPosition, shouldZoom, camera, onZoomComplete]);
+  }, [stage, clickedPoint, camera, controls, onComplete]);
   
   return null;
 }
 
-function Earth({ onOceanClick, onZoomToPoint }) {
+// Earth globe
+function Earth({ onOceanClick, dimmed }) {
   const gltf = useGLTF('/earth.glb');
   const { scene } = gltf;
+  const groupRef = useRef();
 
-  // Load the extracted texture
   const earthTexture = React.useMemo(() => {
     const loader = new THREE.TextureLoader();
-    const texture = loader.load('/earth-texture-extracted.jpg',
-      () => console.log('✅ Texture loaded successfully'),
-      undefined,
-      (error) => console.error('❌ Error loading texture:', error)
-    );
+    const texture = loader.load('/earth-texture-extracted.jpg');
     texture.encoding = THREE.sRGBEncoding;
     return texture;
   }, []);
 
-  // Fix materials and scale
   React.useEffect(() => {
-    console.log('🌍 Setting up Earth model...');
-
-    // Calculate bounding box and scale
     const box = new THREE.Box3().setFromObject(scene);
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
     const maxDimension = Math.max(size.x, size.y, size.z);
-
+    
     if (maxDimension > 0) {
       const targetSize = 100;
       const scale = targetSize / maxDimension;
       scene.scale.multiplyScalar(scale);
       scene.position.sub(center.multiplyScalar(scale));
     }
-
-    // Apply texture to all meshes
-    let meshCount = 0;
+    
     scene.traverse((child) => {
       if (child.isMesh) {
-        meshCount++;
-        console.log(`Applying texture to mesh ${meshCount}: ${child.name}`);
-
-        // Replace material with textured one
         child.material = new THREE.MeshStandardMaterial({
           map: earthTexture,
           roughness: 0.8,
-          metalness: 0.2
+          metalness: 0.2,
+          transparent: dimmed,
+          opacity: dimmed ? 0.15 : 1
         });
-
         child.castShadow = true;
         child.receiveShadow = true;
       }
     });
-
-    console.log(`✅ Applied texture to ${meshCount} mesh(es)`);
-  }, [scene, earthTexture]);
+  }, [scene, earthTexture, dimmed]);
 
   const handleClick = (e) => {
+    if (dimmed) return; // Don't allow clicks when showing cross-section
+    
     e.stopPropagation();
     const intersection = e.intersections[0];
     if (!intersection) return;
 
     const type = classifyIntersection(intersection);
     if (type === 'land') {
-      alert('Clicked land. Please click an ocean region.');
+      alert('Please click on an ocean region (blue water areas).');
       return;
     }
 
     const { lat, lon } = pointToLatLon(intersection.point, scene);
     
-    // Zoom to the clicked point
-    const clickPoint = intersection.point.clone().normalize().multiplyScalar(150);
-    onZoomToPoint(clickPoint);
+    // Pass the actual 3D point that was clicked
+    const clickedWorldPoint = intersection.point.clone();
     
-    onOceanClick({ lat, lon });
+    onOceanClick({ lat, lon, point: clickedWorldPoint });
   };
 
-  return <primitive object={scene} onClick={handleClick} />;
+  return <primitive ref={groupRef} object={scene} onClick={handleClick} />;
 }
 
-// Preload the model before the component renders
 useGLTF.preload('/earth.glb');
 
 export default function App() {
   const [loading, setLoading] = useState(false);
   const [profile, setProfile] = useState(null);
   const [error, setError] = useState(null);
-  const [zoomTarget, setZoomTarget] = useState(null);
-  const [shouldZoom, setShouldZoom] = useState(false);
+  const [showCrossSection, setShowCrossSection] = useState(false);
+  const [cameraStage, setCameraStage] = useState(null);
+  const [clickedLocation, setClickedLocation] = useState(null);
+  const [clickedPoint, setClickedPoint] = useState(null); // 3D point on Earth
   const controlsRef = useRef();
 
-  const handleOceanClick = async ({ lat, lon }) => {
+  const handleOceanClick = async ({ lat, lon, point }) => {
     setLoading(true);
     setError(null);
+    setShowCrossSection(false);
+    setClickedLocation({ lat, lon });
+    setClickedPoint(point); // Store the 3D point
+    
+    // Start zoom animation to clicked point
+    setCameraStage('zoom-in');
+    
     try {
       const data = await fetchTemperatureProfile({
         latitude: lat,
         longitude: lon,
         target_month: '2020-03',
       });
-      console.log('✅ Received temperature data:', data);
+      console.log('✅ Temperature data received:', data);
       setProfile(data);
     } catch (err) {
-      console.error('❌ Failed to fetch temperature data:', err);
+      console.error('❌ Error:', err);
       setError(err.message);
-    } finally {
       setLoading(false);
+      setCameraStage(null);
     }
   };
 
-  const handleZoomToPoint = (point) => {
-    setZoomTarget(point);
-    setShouldZoom(true);
+  const handleZoomComplete = () => {
+    setCameraStage(null);
+    setLoading(false);
+    
+    // Show cross-section after zoom completes
+    setTimeout(() => {
+      setShowCrossSection(true);
+    }, 200);
   };
 
-  const handleZoomComplete = () => {
-    setShouldZoom(false);
+  const handleZoomOutComplete = () => {
+    setCameraStage(null);
+    setShowCrossSection(false);
+    setProfile(null);
+    setClickedLocation(null);
+    setClickedPoint(null);
   };
 
   const handleResetView = () => {
-    setZoomTarget(new THREE.Vector3(0, 0, 250));
-    setShouldZoom(true);
-    setProfile(null);
-    setError(null);
+    setShowCrossSection(false);
+    
+    setTimeout(() => {
+      setCameraStage('zoom-out');
+    }, 300);
   };
 
   return (
-    <div style={{ width: '100vw', height: '100vh', position: 'relative', backgroundColor: '#050505' }}>
+    <div style={{ width: '100vw', height: '100vh', position: 'relative', backgroundColor: '#0a0a0f', overflow: 'hidden' }}>
       <Canvas camera={{ position: [0, 0, 250], fov: 45, near: 1, far: 2000 }}>
-        {/* Better lighting setup for Earth */}
-        <ambientLight intensity={0.3} />
-        <directionalLight position={[5, 3, 5]} intensity={1} />
-        <directionalLight position={[-5, -3, -5]} intensity={0.5} />
-        <hemisphereLight args={['#ffffff', '#080820', 0.4]} />
+        <ambientLight intensity={0.5} />
+        <directionalLight position={[10, 10, 5]} intensity={1} />
+        <directionalLight position={[-10, -10, -5]} intensity={0.5} />
+        <hemisphereLight args={['#ffffff', '#080820', 0.6]} />
 
         <CameraController 
-          targetPosition={zoomTarget} 
-          shouldZoom={shouldZoom}
-          onZoomComplete={handleZoomComplete}
+          stage={cameraStage}
+          clickedPoint={clickedPoint}
+          onComplete={cameraStage === 'zoom-in' ? handleZoomComplete : handleZoomOutComplete}
         />
 
         <ModelErrorBoundary>
@@ -309,9 +663,11 @@ export default function App() {
               <meshStandardMaterial color="#4a90e2" wireframe />
             </mesh>
           }>
-            <Earth 
-              onOceanClick={handleOceanClick}
-              onZoomToPoint={handleZoomToPoint}
+            <Earth onOceanClick={handleOceanClick} dimmed={showCrossSection} />
+            <GeologicalCrossSection 
+              profile={profile} 
+              show={showCrossSection} 
+              clickedPoint={clickedPoint}
             />
           </Suspense>
         </ModelErrorBoundary>
@@ -323,106 +679,131 @@ export default function App() {
           maxDistance={500}
           enableDamping
           dampingFactor={0.05}
+          enabled={!showCrossSection}
+          autoRotate={!showCrossSection}
+          autoRotateSpeed={0.5}
         />
       </Canvas>
 
-      {/* UI Overlay */}
-      <div
-        style={{
+      {/* Data overlay */}
+      <DataOverlay profile={profile} show={showCrossSection} />
+      
+      {/* Info sidebar */}
+      {showCrossSection && profile && clickedLocation && (
+        <InfoSidebar 
+          profile={profile} 
+          latitude={clickedLocation.lat}
+          longitude={clickedLocation.lon}
+          region_name={profile.region_name}
+        />
+      )}
+
+      {/* Top bar with title and reset */}
+      <div style={{
+        position: 'absolute',
+        top: 20,
+        right: 20,
+        display: 'flex',
+        gap: 15,
+        alignItems: 'center'
+      }}>
+        {showCrossSection && (
+          <button 
+            onClick={handleResetView}
+            style={{
+              background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+              border: 'none',
+              color: 'white',
+              padding: '12px 24px',
+              borderRadius: 10,
+              cursor: 'pointer',
+              fontSize: 14,
+              fontWeight: 600,
+              boxShadow: '0 4px 16px rgba(102, 126, 234, 0.5)',
+              transition: 'all 0.3s',
+              fontFamily: 'system-ui'
+            }}
+            onMouseEnter={(e) => {
+              e.target.style.transform = 'translateY(-2px)';
+              e.target.style.boxShadow = '0 6px 24px rgba(102, 126, 234, 0.7)';
+            }}
+            onMouseLeave={(e) => {
+              e.target.style.transform = 'translateY(0)';
+              e.target.style.boxShadow = '0 4px 16px rgba(102, 126, 234, 0.5)';
+            }}
+          >
+            ← Back to Earth
+          </button>
+        )}
+      </div>
+
+      {/* Instructions overlay */}
+      {!showCrossSection && !loading && (
+        <div style={{
+          position: 'absolute',
+          bottom: 40,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          textAlign: 'center',
+          color: 'white',
+          fontFamily: 'system-ui',
+          pointerEvents: 'none'
+        }}>
+          <div style={{
+            background: 'rgba(10, 10, 15, 0.9)',
+            padding: '16px 32px',
+            borderRadius: 12,
+            backdropFilter: 'blur(10px)',
+            border: '1px solid rgba(255,255,255,0.1)',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.8)'
+          }}>
+            <p style={{ margin: 0, fontSize: 16, fontWeight: 600, opacity: 0.9 }}>
+              🌊 Click any ocean to explore temperature layers
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Loading indicator */}
+      {loading && (
+        <div style={{
+          position: 'absolute',
+          top: '50%',
+          left: '50%',
+          transform: 'translate(-50%, -50%)',
+          textAlign: 'center'
+        }}>
+          <div style={{ 
+            width: 60, 
+            height: 60, 
+            border: '5px solid rgba(102, 126, 234, 0.2)',
+            borderTop: '5px solid #667eea',
+            borderRadius: '50%',
+            margin: '0 auto 20px',
+            animation: 'spin 1s linear infinite'
+          }} />
+          <p style={{ color: 'white', fontSize: 16, fontWeight: 600 }}>Diving deep...</p>
+          <style>{`@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }`}</style>
+        </div>
+      )}
+
+      {error && (
+        <div style={{
           position: 'absolute',
           top: 20,
-          right: 20,
-          width: 360,
-          maxHeight: 'calc(100vh - 40px)',
-          backgroundColor: 'rgba(20, 20, 25, 0.95)',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          background: 'rgba(244, 67, 54, 0.95)',
           color: 'white',
-          padding: 20,
-          borderRadius: 12,
-          fontFamily: 'system-ui, -apple-system, sans-serif',
-          overflowY: 'auto',
-          boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
-          backdropFilter: 'blur(10px)',
-          border: '1px solid rgba(255,255,255,0.1)'
-        }}
-      >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>Ocean Temperature Analysis</h2>
-          {profile && (
-            <button 
-              onClick={handleResetView}
-              style={{
-                background: 'rgba(255,255,255,0.1)',
-                border: '1px solid rgba(255,255,255,0.2)',
-                color: 'white',
-                padding: '6px 12px',
-                borderRadius: 6,
-                cursor: 'pointer',
-                fontSize: 12,
-                fontWeight: 500,
-                transition: 'all 0.2s'
-              }}
-              onMouseOver={(e) => e.target.style.background = 'rgba(255,255,255,0.2)'}
-              onMouseOut={(e) => e.target.style.background = 'rgba(255,255,255,0.1)'}
-            >
-              Reset View
-            </button>
-          )}
+          padding: '12px 24px',
+          borderRadius: 8,
+          fontSize: 14,
+          fontWeight: 600,
+          boxShadow: '0 4px 16px rgba(244, 67, 54, 0.5)'
+        }}>
+          ⚠️ {error}
         </div>
-
-        {loading && (
-          <div style={{ textAlign: 'center', padding: '40px 0' }}>
-            <div style={{ 
-              width: 40, 
-              height: 40, 
-              border: '3px solid rgba(255,255,255,0.1)',
-              borderTop: '3px solid white',
-              borderRadius: '50%',
-              margin: '0 auto 16px',
-              animation: 'spin 1s linear infinite'
-            }} />
-            <p style={{ margin: 0, opacity: 0.8 }}>Fetching temperature data...</p>
-            <style>{`
-              @keyframes spin {
-                0% { transform: rotate(0deg); }
-                100% { transform: rotate(360deg); }
-              }
-            `}</style>
-          </div>
-        )}
-        
-        {error && (
-          <div style={{ 
-            padding: 16, 
-            background: 'rgba(224, 84, 63, 0.15)', 
-            border: '1px solid rgba(224, 84, 63, 0.4)',
-            borderRadius: 8,
-            color: '#ff9999'
-          }}>
-            <strong style={{ display: 'block', marginBottom: 8 }}>⚠️ Error</strong>
-            {error}
-          </div>
-        )}
-        
-        {!loading && !profile && !error && (
-          <div style={{ 
-            textAlign: 'center', 
-            padding: '40px 20px',
-            background: 'rgba(255,255,255,0.03)',
-            borderRadius: 8,
-            border: '1px dashed rgba(255,255,255,0.2)'
-          }}>
-            <div style={{ fontSize: 48, marginBottom: 16 }}>🌊</div>
-            <p style={{ margin: '0 0 8px 0', fontSize: 15, fontWeight: 500 }}>
-              Click on the ocean to view temperature profile
-            </p>
-            <p style={{ margin: 0, fontSize: 13, opacity: 0.6 }}>
-              Data from the last 20 years
-            </p>
-          </div>
-        )}
-
-        {profile && !loading && <TemperatureLayers profile={profile} />}
-      </div>
+      )}
     </div>
   );
 }

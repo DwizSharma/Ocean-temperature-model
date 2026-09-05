@@ -1,6 +1,9 @@
 export const CONFIG = {
   DEBUG_MODE: true,
 
+  // Use mock data instead of real API (useful for development/testing)
+  USE_MOCK_DATA: import.meta.env.VITE_USE_MOCK_DATA === 'true' || true,
+
   // Longitude offset applied when converting 3D click positions to lat/lon.
   // Set to 0 for standard earth models; adjust if the texture is rotated.
   LONGITUDE_OFFSET: 0,

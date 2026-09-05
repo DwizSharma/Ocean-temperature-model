@@ -1,4 +1,6 @@
 import { CONFIG } from './config';
+import { fetchMockProfile } from './mock-data';
+
 export class OceanApiError extends Error {
   constructor(message, cause) {
     super(message);
@@ -12,6 +14,14 @@ export class OceanApiError extends Error {
  * the parsed temperature-profile response.
  */
 export async function fetchTemperatureProfile({ latitude, longitude, target_month }, { signal } = {}) {
+  // Use mock data if configured
+  if (CONFIG.USE_MOCK_DATA) {
+    console.log('🔵 Using mock data for:', { latitude, longitude, target_month });
+    return fetchMockProfile({ latitude, longitude, target_month });
+  }
+
+  // Real API call
+  console.log('🟢 Fetching from real API:', CONFIG.API_ENDPOINT);
   let response;
   try {
     response = await fetch(CONFIG.API_ENDPOINT, {
