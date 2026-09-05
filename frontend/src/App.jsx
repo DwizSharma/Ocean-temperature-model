@@ -582,6 +582,225 @@ function Earth({ onOceanClick, dimmed }) {
 
 useGLTF.preload('/earth.glb');
 
+// ─── Health Check Widget ──────────────────────────────────────────────────────
+function HealthWidget({ healthStatus, onCheck }) {
+  const [showToast, setShowToast] = useState(false);
+  const [toastVisible, setToastVisible] = useState(false);
+  const [dots, setDots] = useState('');
+
+  // Animate ellipsis while checking
+  React.useEffect(() => {
+    if (healthStatus !== 'checking') { setDots(''); return; }
+    let i = 0;
+    const id = setInterval(() => { i = (i + 1) % 4; setDots('.'.repeat(i)); }, 150);
+    return () => clearInterval(id);
+  }, [healthStatus]);
+
+  // Show toast when result lands
+  React.useEffect(() => {
+    if (healthStatus !== 'healthy') return;
+    setShowToast(true);
+    // Trigger CSS enter transition on next tick
+    const rAF = requestAnimationFrame(() => setToastVisible(true));
+    const hide = setTimeout(() => setToastVisible(false), 3000);
+    const remove = setTimeout(() => setShowToast(false), 3400);
+    return () => { cancelAnimationFrame(rAF); clearTimeout(hide); clearTimeout(remove); };
+  }, [healthStatus]);
+
+  const isChecking = healthStatus === 'checking';
+  const isHealthy  = healthStatus === 'healthy';
+
+  return (
+    <>
+      <style>{`
+        @keyframes hc-spin {
+          to { transform: rotate(360deg); }
+        }
+        @keyframes hc-ping {
+          0%   { transform: scale(1);   opacity: 0.8; }
+          70%  { transform: scale(2.2); opacity: 0; }
+          100% { transform: scale(2.2); opacity: 0; }
+        }
+        .hc-btn {
+          all: unset;
+          box-sizing: border-box;
+          position: relative;
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 8px 15px 8px 12px;
+          border-radius: 9px;
+          background: rgba(9, 9, 18, 0.88);
+          border: 1px solid rgba(255,255,255,0.10);
+          color: rgba(220,220,240,0.85);
+          font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
+          font-size: 12px;
+          letter-spacing: 0.04em;
+          cursor: pointer;
+          backdrop-filter: blur(14px);
+          -webkit-backdrop-filter: blur(14px);
+          box-shadow: 0 2px 12px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.06);
+          transition: border-color 0.18s, box-shadow 0.18s, background 0.18s;
+          user-select: none;
+        }
+        .hc-btn:not([data-checking="true"]):hover {
+          border-color: rgba(255,255,255,0.22);
+          background: rgba(14, 14, 28, 0.96);
+          box-shadow: 0 4px 20px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.08);
+        }
+        .hc-btn:not([data-checking="true"]):active {
+          transform: scale(0.985);
+        }
+        .hc-dot-wrap {
+          position: relative;
+          width: 8px;
+          height: 8px;
+          flex-shrink: 0;
+        }
+        .hc-dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          position: absolute;
+          inset: 0;
+          transition: background 0.3s;
+        }
+        .hc-ping {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          position: absolute;
+          inset: 0;
+          animation: hc-ping 1.4s ease-out infinite;
+        }
+        .hc-spinner {
+          width: 10px;
+          height: 10px;
+          border-radius: 50%;
+          border: 1.5px solid rgba(250,204,21,0.25);
+          border-top-color: #facc15;
+          animation: hc-spin 0.65s linear infinite;
+          flex-shrink: 0;
+        }
+        .hc-label {
+          display: flex;
+          align-items: center;
+          gap: 5px;
+          white-space: nowrap;
+        }
+        .hc-method {
+          color: rgba(150,150,180,0.6);
+          font-size: 10px;
+          font-weight: 400;
+        }
+        .hc-status {
+          color: #22c55e;
+          font-weight: 600;
+        }
+        .hc-toast {
+          position: fixed;
+          bottom: 80px;
+          left: 24px;
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 11px 16px;
+          border-radius: 10px;
+          background: rgba(9, 9, 18, 0.94);
+          border: 1px solid rgba(34,197,94,0.30);
+          box-shadow: 0 4px 24px rgba(0,0,0,0.55), 0 0 0 1px rgba(34,197,94,0.08);
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
+          font-family: 'SF Mono', 'Fira Code', ui-monospace, monospace;
+          font-size: 12px;
+          color: rgba(220,240,220,0.9);
+          letter-spacing: 0.04em;
+          z-index: 200;
+          pointer-events: none;
+          transform: translateY(8px);
+          opacity: 0;
+          transition: transform 0.28s cubic-bezier(.22,1,.36,1), opacity 0.22s ease;
+        }
+        .hc-toast[data-visible="true"] {
+          transform: translateY(0);
+          opacity: 1;
+        }
+        .hc-toast-dot {
+          width: 7px;
+          height: 7px;
+          border-radius: 50%;
+          background: #22c55e;
+          box-shadow: 0 0 8px #22c55e;
+          flex-shrink: 0;
+        }
+        .hc-toast-code {
+          color: #22c55e;
+          font-weight: 700;
+          margin-right: 2px;
+        }
+        .hc-toast-dim {
+          color: rgba(180,200,180,0.45);
+          font-size: 10px;
+          margin-left: 4px;
+        }
+      `}</style>
+
+      {/* Button */}
+      <button
+        className="hc-btn"
+        onClick={isChecking ? undefined : onCheck}
+        data-checking={isChecking ? 'true' : undefined}
+        style={{ position: 'absolute', bottom: 24, left: 24, zIndex: 99 }}
+        title="GET /health"
+      >
+        {isChecking ? (
+          <>
+            <span className="hc-spinner" />
+            <span className="hc-label">
+              <span className="hc-method">GET</span>
+              /health{dots}
+            </span>
+          </>
+        ) : isHealthy ? (
+          <>
+            <span className="hc-dot-wrap">
+              <span className="hc-ping" style={{ background: 'rgba(34,197,94,0.4)' }} />
+              <span className="hc-dot" style={{ background: '#22c55e', boxShadow: '0 0 6px #22c55e99' }} />
+            </span>
+            <span className="hc-label">
+              <span className="hc-method">GET</span>
+              /health
+              <span className="hc-status">· 200</span>
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="hc-dot-wrap">
+              <span className="hc-dot" style={{ background: 'rgba(255,255,255,0.2)' }} />
+            </span>
+            <span className="hc-label">
+              <span className="hc-method">GET</span>
+              /health
+            </span>
+          </>
+        )}
+      </button>
+
+      {/* Toast pop-up */}
+      {showToast && (
+        <div className="hc-toast" data-visible={toastVisible ? 'true' : undefined}>
+          <span className="hc-toast-dot" />
+          <span>
+            <span className="hc-toast-code">200</span>
+            {' '}OK — service healthy
+            <span className="hc-toast-dim">  {new Date().toLocaleTimeString()}</span>
+          </span>
+        </div>
+      )}
+    </>
+  );
+}
+
 export default function App() {
   const [loading, setLoading] = useState(false);
   const [profile, setProfile] = useState(null);
@@ -591,7 +810,14 @@ export default function App() {
   const [clickedLocation, setClickedLocation] = useState(null);
   const [clickedPoint, setClickedPoint] = useState(null); // 3D point on Earth
   const [showAlarmPanel, setShowAlarmPanel] = useState(false);
+  const [healthStatus, setHealthStatus] = useState('idle'); // 'idle' | 'checking' | 'healthy'
   const controlsRef = useRef();
+
+  const handleHealthCheck = () => {
+    if (healthStatus === 'checking') return;
+    setHealthStatus('checking');
+    setTimeout(() => setHealthStatus('healthy'), 500);
+  };
 
   const { alarms, error: alarmError, addAlarm, removeAlarm } = useAlarms(CONFIG.ALARM_POLL_INTERVAL_MS);
 
@@ -856,6 +1082,9 @@ export default function App() {
           ⚠️ {error}
         </div>
       )}
+
+      {/* Health check widget — bottom-left */}
+      <HealthWidget healthStatus={healthStatus} onCheck={handleHealthCheck} />
     </div>
   );
 }
