@@ -365,11 +365,6 @@ function InfoSidebar({ profile, latitude, longitude, region_name }) {
       border: '1px solid rgba(255,255,255,0.1)'
     }}>
       <h3 style={{ margin: '0 0 12px 0', fontSize: 18, fontWeight: 700 }}>Location</h3>
-      {region_name && (
-        <p style={{ fontSize: 13, margin: '0 0 6px 0', opacity: 0.8, fontStyle: 'italic' }}>
-          📍 {region_name}
-        </p>
-      )}
       <p style={{ fontSize: 14, margin: 0, opacity: 0.9 }}>
         {formatLat(latitude)} {formatLon(longitude)}
       </p>
