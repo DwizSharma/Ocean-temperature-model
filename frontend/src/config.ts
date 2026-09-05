@@ -14,5 +14,6 @@ export const CONFIG = {
   ENABLE_COLOR_FALLBACK: true,
 
   // Backend API URL for temperature predictions.
-  API_ENDPOINT: 'http://localhost:8080/api/predict',
+  // In development, use proxy to avoid CORS issues
+  API_ENDPOINT: import.meta.env.VITE_API_ENDPOINT || '/api/v1/predict',
 };
