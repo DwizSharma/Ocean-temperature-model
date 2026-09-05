@@ -19,4 +19,8 @@ export const CONFIG = {
   // Backend API URL for temperature predictions.
   // In development, use proxy to avoid CORS issues
   API_ENDPOINT: import.meta.env.VITE_API_ENDPOINT || '/api/v1/predict',
+
+  // Alarm polling interval in milliseconds (mirrors backend ALARM_POLL_INTERVAL_SECONDS).
+  // Override with VITE_ALARM_POLL_INTERVAL_MS env var.
+  ALARM_POLL_INTERVAL_MS: parseInt(import.meta.env.VITE_ALARM_POLL_INTERVAL_MS ?? '2000', 10),
 };

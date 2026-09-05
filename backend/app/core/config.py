@@ -32,6 +32,13 @@ class Settings(BaseSettings):
             if not val.is_absolute():
                 resolved = (BACKEND_DIR / val).resolve()
                 setattr(self, field, resolved)
+    # Alarm polling
+    alarm_poll_interval_seconds: float = 2.0
+
+    # Telegram — leave blank to disable notifications
+    telegram_bot_token: str = ""
+    # Comma-separated list of chat_ids to notify (seed values; more can be added at runtime)
+    telegram_chat_ids: str = ""
 
     @property
     def cors_origins(self) -> list[str]:
@@ -40,6 +47,14 @@ class Settings(BaseSettings):
     @property
     def supported_month_set(self) -> set[str]:
         return {item.strip() for item in self.supported_target_months.split(",") if item.strip()}
+
+    @property
+    def telegram_enabled(self) -> bool:
+        return bool(self.telegram_bot_token)
+
+    @property
+    def initial_chat_ids(self) -> list[str]:
+        return [cid.strip() for cid in self.telegram_chat_ids.split(",") if cid.strip()]
 
 
 @lru_cache
